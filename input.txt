@@ -1,0 +1,5 @@
+What is RAG?
+Why does SQLite not need a separate server?
+What is Python?
+Who won the 2014 FIFA World Cup?
+exit
