@@ -140,6 +140,20 @@ The project is verified against automated tests (via `run_tests.py`) covering fo
 - A question about Python
 - An intentionally unrelated World Cup question (to verify hallucination fallback)
 
+## Web Interface
+
+An optional Streamlit web interface is available for a more polished experience.
+
+Run:
+```powershell
+streamlit run streamlit_app.py
+```
+
+The CLI remains available with:
+```powershell
+python app.py
+```
+
 ## Limitations
 
 - Only `.txt` documents are currently supported.
@@ -153,6 +167,5 @@ The project is verified against automated tests (via `run_tests.py`) covering fo
 - PDF/DOCX ingestion support.
 - Token-aware chunking.
 - Minimum similarity threshold for retrieval.
-- Streamlit web interface.
 - Larger or alternative local models depending on hardware.
 - Advanced vector database storage (e.g., Qdrant, Chroma).
