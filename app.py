@@ -4,14 +4,7 @@ import json
 import sqlite3
 import math
 from foundry_local_sdk import Configuration, FoundryLocalManager
-
-def cosine_similarity(v1, v2):
-    dot_product = sum(a * b for a, b in zip(v1, v2))
-    mag1 = math.sqrt(sum(a * a for a in v1))
-    mag2 = math.sqrt(sum(b * b for b in v2))
-    if mag1 == 0 or mag2 == 0:
-        return 0.0
-    return dot_product / (mag1 * mag2)
+from retrieval import retrieve, MIN_RETRIEVAL_SIMILARITY
 
 def main():
     db_path = os.path.join('data', 'knowledge.db')
@@ -90,40 +83,32 @@ def main():
             embed_response = embed_client.generate_embedding(question)
             query_embedding = embed_response.data[0].embedding
             
-            # 2. Similarity Search
-            results = []
-            for row in rows:
-                source, content, embedding_json = row
-                doc_embedding = json.loads(embedding_json)
-                sim = cosine_similarity(query_embedding, doc_embedding)
-                results.append({
-                    "source": source,
-                    "content": content,
-                    "score": sim
-                })
-                
-            results.sort(key=lambda x: x["score"], reverse=True)
-            top_k = 3
-            top_results = results[:top_k]
-            
-            # 3. Context Construction
-            context_str = ""
-            for res in top_results:
-                context_str += f"SOURCE: {res['source']}\nCONTENT: {res['content']}\n\n"
-                
-            user_prompt = f"Context:\n{context_str}\nQuestion: {question}"
-            messages = [
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_prompt}
-            ]
-            
-            # 4. Generate Answer
-            chat_response = chat_client.complete_chat(messages)
-            answer = chat_response.choices[0].message.content.strip()
+            # 2. Semantic Retrieval
+            top_results = retrieve(query_embedding, rows, top_k=3)
             
             fallback_phrase = "I don't have enough information in the provided documents."
-            if "don't have enough information" in answer.lower() or "do not have enough information" in answer.lower():
+            
+            # 3. Confidence Gate
+            if not top_results or top_results[0]['score'] < MIN_RETRIEVAL_SIMILARITY:
                 answer = fallback_phrase
+            else:
+                # 4. Context Construction
+                context_str = ""
+                for res in top_results:
+                    context_str += f"SOURCE: {res['source']}\nCONTENT: {res['content']}\n\n"
+                    
+                user_prompt = f"Context:\n{context_str}\nQuestion: {question}"
+                messages = [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_prompt}
+                ]
+                
+                # 5. Generate Answer
+                chat_response = chat_client.complete_chat(messages)
+                answer = chat_response.choices[0].message.content.strip()
+                
+                if "don't have enough information" in answer.lower() or "do not have enough information" in answer.lower():
+                    answer = fallback_phrase
             
             print(f"\n{answer}")
 
