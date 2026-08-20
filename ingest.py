@@ -1,66 +1,15 @@
 import os
 import sys
 import glob
-import json
-import sqlite3
 from foundry_local_sdk import Configuration, FoundryLocalManager
-
-def chunk_text(text):
-    """Split text into chunks by blank lines and trim whitespace."""
-    # Split by double newline to separate paragraphs
-    paragraphs = text.split('\n\n')
-    chunks = [p.strip() for p in paragraphs if p.strip()]
-    return chunks
+from document_ingestion import index_document
 
 def main():
     documents_dir = 'documents'
     db_path = os.path.join('data', 'knowledge.db')
     
-    # 1. Setup DB
-    os.makedirs('data', exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chunks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            content TEXT NOT NULL,
-            embedding TEXT NOT NULL
-        )
-    ''')
-    
-    cursor.execute('DELETE FROM chunks')
-    cursor.execute('DELETE FROM sqlite_sequence WHERE name="chunks"')
-    conn.commit()
-    
-    # 2. Read and chunk documents
-    txt_files = glob.glob(os.path.join(documents_dir, '*.txt'))
-    if not txt_files:
-        print(f"No .txt files found in {documents_dir}")
-        sys.exit(1)
-        
-    documents = []
-    for filepath in txt_files:
-        filename = os.path.basename(filepath)
-        with open(filepath, 'r', encoding='utf-8') as f:
-            text = f.read()
-        
-        chunks = chunk_text(text)
-        for chunk in chunks:
-            documents.append({
-                "source": filename,
-                "content": chunk
-            })
-            
-    num_files = len(txt_files)
-    num_chunks = len(documents)
-    
-    if num_chunks == 0:
-        print("No content found in documents.")
-        sys.exit(1)
-        
-    # 3. Setup Foundry Local
+    # 1. Setup Foundry Local Embeddings
+    print("Initializing embedding model...")
     config = Configuration(app_name="LocalRAGApp")
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
@@ -78,31 +27,64 @@ def main():
         
     client = model.get_embedding_client()
     
-    # 4. Generate embeddings
-    contents = [doc["content"] for doc in documents]
-    response = client.generate_embeddings(contents)
-    
-    embedding_dim = len(response.data[0].embedding)
-    
-    # 5. Insert into DB
-    for i, doc in enumerate(documents):
-        emb_list = response.data[i].embedding
-        emb_json = json.dumps(emb_list)
-        cursor.execute('''
-            INSERT INTO chunks (source, content, embedding)
-            VALUES (?, ?, ?)
-        ''', (doc["source"], doc["content"], emb_json))
+    # 2. Discover Documents
+    supported_extensions = ('.txt', '.pdf', '.docx')
+    filepaths = []
+    if os.path.exists(documents_dir):
+        for root, _, files in os.walk(documents_dir):
+            for file in files:
+                if file.lower().endswith(supported_extensions):
+                    filepaths.append(os.path.join(root, file))
+                    
+    num_discovered = len(filepaths)
+    if num_discovered == 0:
+        print(f"No supported documents found in {documents_dir}")
+        sys.exit(1)
         
-    conn.commit()
+    # 3. Index Documents
+    stats = {
+        "indexed": 0,
+        "updated": 0,
+        "skipped": 0,
+        "error": 0,
+        "chunks_created": 0
+    }
     
-    # 6. Cleanup
+    print(f"Discovered {num_discovered} documents. Starting ingestion...\n")
+    for filepath in filepaths:
+        filename = os.path.basename(filepath)
+        try:
+            with open(filepath, 'rb') as f:
+                file_bytes = f.read()
+                
+            result = index_document(filename, file_bytes, client, db_path)
+            
+            status = result["status"]
+            stats[status] += 1
+            if status != "error":
+                stats["chunks_created"] += result["chunks_created"]
+                
+            if status == "error":
+                print(f"[ERROR] {filename}: {result.get('error', 'Unknown error')}")
+            else:
+                print(f"[{status.upper()}] {filename} ({result['chunks_created']} chunks)")
+                
+        except Exception as e:
+            stats["error"] += 1
+            print(f"[ERROR] Failed to read {filename}: {str(e)}")
+            
+    # 4. Cleanup
     model.unload()
-    conn.close()
     
-    # 7. Print summary
-    print(f"Files processed: {num_files}")
-    print(f"Chunks created: {num_chunks}")
-    print(f"Embedding dimension: {embedding_dim}")
+    # 5. Print summary
+    print("\n--- Ingestion Summary ---")
+    print(f"Documents discovered: {num_discovered}")
+    print(f"Indexed: {stats['indexed']}")
+    print(f"Updated: {stats['updated']}")
+    print(f"Skipped: {stats['skipped']}")
+    if stats["error"] > 0:
+        print(f"Errors: {stats['error']}")
+    print(f"Chunks created: {stats['chunks_created']}")
     print(f"Database: {db_path}")
 
 if __name__ == "__main__":
